@@ -1,4 +1,4 @@
-package com.itzy.spider.jd;
+package com.itzy.spider.jd.v1;
 
 import com.google.gson.Gson;
 import org.apache.http.client.methods.CloseableHttpResponse;

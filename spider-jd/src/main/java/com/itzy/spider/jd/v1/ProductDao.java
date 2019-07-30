@@ -1,4 +1,4 @@
-package com.itzy.spider.jd;
+package com.itzy.spider.jd.v1;
 
 import com.mchange.v2.c3p0.ComboPooledDataSource;
 import org.springframework.jdbc.core.JdbcTemplate;

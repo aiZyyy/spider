@@ -1,4 +1,4 @@
-package com.itzy.spider.jd;
+package com.itzy.spider.jd.v1;
 
 public class Product {
 	

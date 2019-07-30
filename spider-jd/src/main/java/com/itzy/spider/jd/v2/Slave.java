@@ -1,7 +1,8 @@
-package com.itzy.spider.jd;
+package com.itzy.spider.jd.v2;
 
 import com.google.gson.Gson;
-import org.apache.http.client.ClientProtocolException;
+import com.itzy.spider.jd.v1.Product;
+import com.itzy.spider.jd.v1.ProductDao;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.impl.client.CloseableHttpClient;
@@ -9,75 +10,41 @@ import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
-import org.jsoup.select.Elements;
+import redis.clients.jedis.Jedis;
 
-import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
  * @Author: ZY
- * @Date: 2019/7/30 10:32
+ * @Date: 2019/7/30 14:52
  * @Version 1.0
  */
-public class JdSpider {
-    public static void main(String[] args) throws Exception {
-        // 第一个事情：解析首页的信息，得到商品列表
-        parserIndex();
-        // 第二个事情：解析分页的信息，得到商品列表
-        dopaging();
-    }
+public class Slave {
+    private final static ProductDao productDao = new ProductDao();
 
-    private static void dopaging() throws Exception {
-        int page = 1;
-        while (page <= 100) {
-            String url = "https://search.jd.com/Search?keyword=%E6%89%8B%E6%9C%BA&enc=utf-8&qrst=1&rt=1&stop=1&vt=2&wq=%E6%89%8B%E6%9C%BA&cid2=653&cid3=655&page="
-                    + (2 * page - 1);
-            System.out.println(url);
-            String pagingResult = getHtml(url);
-            getSearchResultInfo(pagingResult);
-            page++;
+    public static void main(String[] args) {
 
-        }
-    }
-
-    private static void parserIndex() throws Exception {
-        // 1.指定url
-        String indexUrl = "https://search.jd.com/Search?keyword=%E6%89%8B%E6%9C%BA&enc=utf-8&wq=%E6%89%8B%E6%9C%BA&pvid=4462d633d7774a1dafc55419260fae59";
-        String indexHtml = getHtml(indexUrl);
-        getSearchResultInfo(indexHtml);
-    }
-
-    private static void getSearchResultInfo(String indexHtml) {
-        if (indexHtml != null) {
-            Document indexDoc = Jsoup.parse(indexHtml);
-            // 6.定位到商品列表
-            Elements liList = indexDoc.select("#J_goodsList li[data-pid]");
-            for (Element li : liList) {
-                // 7.依次每个商品的详情页，并解析出数据
-                try {
-                    parserProductDetail(li.attr("data-pid"));
-                } catch (Exception e) {
-                    System.out.println("商品url访问失败！   " + li.attr("data-pid") + e);
-                }
+        while (true) {
+            // 1) 获取外部的url--------Redis list中获取、阻塞的
+            // 原生JDK中，queue会有重复消费的问题。 blockqueue.take，避免重复消费。
+            Jedis jedis = new Jedis("node01", 6379);
+            // final int timeout, final String... keys) 多了一个参数timeout
+            // brpop的返回值，有两个第一个参数是 用户请求的key，第二个参数是返回的值
+            List<String> result = jedis.brpop(0, "bigdata:spider:jd:urls");
+            String pId = result.get(1);
+            // 2) 根据url获取数据
+            try {
+                parserProductDetail(pId);
+//				Thread.sleep(500);
+            } catch (Exception e) {
+                System.out.println("pid处理失败：" + pId);
+                System.out.println(e);
+                // 再将PID存放到对立中，等待下次爬取。
             }
         }
-    }
-
-    private static String getHtml(String indexUrl) throws IOException {
-        // 2.将url对象封装成httpget对象
-        HttpGet indexHttpGet = new HttpGet(indexUrl);
-        // 3.使用httpclient发起一个请求
-        CloseableHttpClient indexHttpClient = HttpClients.createDefault();
-        CloseableHttpResponse indexRes = indexHttpClient.execute(indexHttpGet);
-        // 4.从响应结果中，获得首页的html文档
-        if (200 == indexRes.getStatusLine().getStatusCode()) {
-            // 5.获得首页的信息，从首页中找出商品的列表
-            return EntityUtils.toString(indexRes.getEntity(), Charset.forName("utf-8"));
-        }
-        return null;
     }
 
     private static void parserProductDetail(String pId) throws Exception {
@@ -100,12 +67,13 @@ public class JdSpider {
             product.setUrl(pUrl);
             // 7. 补全价格信息
             // 1）指定url，2）封装httpget请求 3）发起期请求 4） 得到值
-            String priceUrl = "https://p.3.cn/prices/mgets?skuIds=J_" + pId;
+            String priceUrl = "http://p.3.cn/prices/mgets?&type=1&area=1_72_2799_0&pdtk=&pduid=2098855974&pdpin=&pin=null&pdbp=0&ext=11000000&source=item-pc&skuIds=J_" + pId;
             HttpGet priceHttpGet = new HttpGet(priceUrl);
             CloseableHttpClient priceHttpClient = HttpClients.createDefault();
             CloseableHttpResponse priceRes = priceHttpClient.execute(priceHttpGet);
             if (200 == priceRes.getStatusLine().getStatusCode()) {
                 String priceJson = EntityUtils.toString(priceRes.getEntity(), Charset.forName("utf-8"));
+                System.out.println(priceJson);
                 // [{"op":"1999.00","m":"3000.00","id":"J_3367822","p":"1999.00"}]
                 // Gson 谷歌提欧专用于解析json，将json串转化成一个对象。
                 // 使用必须导入pom依赖。
@@ -116,12 +84,19 @@ public class JdSpider {
                 String price = map.get("op");
                 product.setPrice(price);
             }
-            System.out.println(product);
+
+            // 将解析出来的数据，保存到数据库。
+            productDao.saveProduct(product);
         }
 
     }
 
     private static Product getProductInfo(Document detailDoc) {
+        /**
+         * private String name; private String title; private String price;
+         * private String maidian; private String pinpai; private String
+         * xinghao;
+         */
         Product product = new Product();
         // 获取商品名称
         String name = detailDoc.select("[class=parameter2 p-parameter-list] li").get(0).text();
